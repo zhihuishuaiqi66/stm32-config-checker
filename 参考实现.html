@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>STM32 配置台 · 前端参考实现（自测版）</title>
+<style>
+  body{font:14px/1.6 ui-monospace,Consolas,monospace;background:#0f172a;color:#e2e8f0;padding:24px}
+  h1{font-size:16px;color:#38bdf8}
+  table{border-collapse:collapse;margin:8px 0 20px}
+  td,th{border:1px solid #334155;padding:3px 10px;text-align:left}
+  .ok{color:#22c55e}.err{color:#ef4444}.warn{color:#f59e0b}
+  #result{font-size:16px;padding:12px;border:1px solid #334155;border-radius:6px;margin-top:16px}
+</style>
+</head>
+<body>
+<h1>STM32 配置台 · 前端参考实现</h1>
+<p>这个文件验证两件事：① <code>data.json</code> 能被浏览器直接读 ② 时钟树和冲突判定的算法在纯前端跑得对。</p>
+<div id="out">加载中…</div>
+<div id="result">…</div>
+
+<script>
+/* ============================================================
+   参考实现：时钟树计算 + 引脚冲突检查（纯前端，无依赖）
+   把这段逻辑照搬到 Qoder 生成的页面里就行
+   ============================================================ */
+
+let DB = null;
+
+// ---------- 1. 时钟树 ----------
+// F1：SYSCLK = (HSE ÷ hse_pll_div) × PLLMUL
+//     ★ hse_pll_div 是【可选】1 或 2（PLLXTPRE），默认 1。
+//       要跑满 72MHz 必须 ÷1；÷2 的话最高 ×16 也只有 64MHz，反而上不了 72。
+//     ★ USB = SYSCLK ÷ usb_div，usb_div 可选 1（默认）/ 1.5，要 48MHz 必须选 1.5
+// F4：VCO_in = HSE / PLLM；VCO_out = VCO_in × PLLN；
+//     SYSCLK = VCO_out / PLLP；USB = VCO_out / PLLQ
+function calcClock(mcu, cfg) {
+  const m = DB.mcus[mcu];
+  const hse = cfg.hse != null ? cfg.hse : m.hse_default_mhz;
+  let vcoIn, vcoOut, sysclk, usb = null;
+
+  if (m.clock_family === "F1") {
+    // ★ 2026-11-15 修正：F103 的 HSE 进 PLL 前有一个可选 ÷1/÷2（PLLXTPRE）。
+    //   之前这里写死「不除 2」是错的 —— 默认确实是 ÷1，但可以选 ÷2。
+    //   实测：÷1 ×9 = 72MHz；÷2 ×9 = 36MHz（且 ÷2 时最高 ×16 也只有 64，上不了 72）
+    const hseDiv = cfg.hse_pll_div || 1;
+    vcoIn = hse / hseDiv;
+    vcoOut = null;
+    sysclk = vcoIn * cfg.pll_mul;
+    // ★ 2026-11-15 审查修正：F103 的 USB 预分频是【可选】1 或 1.5，**默认 1**。
+    //   想用 USB 必须手动选 ÷1.5 且 PLL 正好 72MHz，USB 才有 48MHz。
+    //   （器件库 RCC-STM32F102…Modes.xml：USBPrescaler 可选 1 / 1.5，默认 1）
+    const usbDiv = cfg.usb_div || m.usb_div_default || 1;
+    usb = m.usb_div_options ? sysclk / usbDiv : null;
+  } else {
+    vcoIn = hse / cfg.pll_m;
+    vcoOut = vcoIn * cfg.pll_n;
+    sysclk = vcoOut / cfg.pll_p;
+    usb = cfg.pll_q ? vcoOut / cfg.pll_q : null;
+  }
+
+  const hclk  = sysclk / cfg.ahb_presc;
+  const pclk1 = hclk / cfg.apb1_presc;
+  const pclk2 = hclk / cfg.apb2_presc;
+  // ★ APB 分频 ≠ 1 时，定时器时钟是 PCLK 的 2 倍
+  const tim1 = cfg.apb1_presc === 1 ? pclk1 : pclk1 * 2;
+  const tim2 = cfg.apb2_presc === 1 ? pclk2 : pclk2 * 2;
+
+  const lim = m.limits;
+  // 判定顺序（按规格书第 6.4 节）：
+  //   超上限     → err
+  //   正好等于上限 → ok（能跑，但界面要提示"满频运行，注意发热"）
+  //   超过 90%   → warn
+  const chk = (v, cap) => {
+    if (cap == null) return "na";
+    if (v > cap + 1e-9) return "err";
+    if (v >= cap - 1e-9) return "ok";
+    if (v > cap * 0.9) return "warn";
+    return "ok";
+  };
+
+  return {
+    hse, vcoIn, vcoOut, sysclk, hclk, pclk1, pclk2, tim1, tim2, usb,
+    status: {
+      sysclk: chk(sysclk, lim.sysclk),
+      hclk:   chk(hclk,   lim.hclk),
+      pclk1:  chk(pclk1,  lim.apb1),
+      pclk2:  chk(pclk2,  lim.apb2),
+      usb:    usb == null ? "na" : (Math.abs(usb - 48) < 1e-6 ? "ok" : "err"),
+    },
+  };
+}
+
+// ---------- 2. 引脚冲突检查 ----------
+// 优先级：不存在 > 同脚被抢 > swd/boot 警告 > osc 冲突 > usb/can 冲突 > jtag 警告
+function checkPins(mcu, assigns) {
+  const m = DB.mcus[mcu];
+  const byName = {};
+  m.pins.forEach(p => byName[p.name] = p);
+  const owner = {};          // 引脚 → [外设...]
+  const issues = [];
+
+  assigns.forEach(a => {
+    a.pins.forEach(pin => {
+      const p = byName[pin];
+      if (!p) { issues.push({ lv: "err", pin, msg: `${pin} 在 ${m.package} 封装上不存在` }); return; }
+      if (!p.assignable) { issues.push({ lv: "err", pin, msg: `${pin} 是 ${p.type} 脚，不能分配外设` }); return; }
+      (owner[pin] = owner[pin] || []).push(a.instance);
+      const w = p.warn || [];
+      if (w.includes("swd"))  issues.push({ lv: "warn", pin, msg: `${pin} 是 SWD 调试口，占了下次烧不进程序` });
+      if (w.includes("boot")) issues.push({ lv: "warn", pin, msg: `${pin} 是启动脚，当普通 IO 用可能不启动` });
+      if (w.includes("osc") && assigns.some(x => x.type === "RCC" && x.hse)) {
+        issues.push({ lv: "err", pin, msg: `${pin} 是主晶振脚，被占了 HSE 起不来` });
+      }
+      if (w.includes("usb") && assigns.some(x => x.type === "CAN")) {
+        issues.push({ lv: "err", pin, msg: `${pin} 是 USB 脚，和 CAN 抢脚` });
+      }
+      if (w.includes("jtag")) issues.push({ lv: "warn", pin, msg: `${pin} 默认是 JTAG，当 IO 用要先关 JTAG` });
+    });
+  });
+
+  Object.keys(owner).forEach(pin => {
+    if (owner[pin].length > 1) {
+      issues.push({ lv: "err", pin, msg: `${pin} 被 ${owner[pin].join(" 和 ")} 同时要用` });
+    }
+  });
+  return issues;
+}
+
+// ---------- 3. 断言 + 跑测试 ----------
+const T = [];
+// 注意：calcClock 返回的单位是 **MHz**（跟 data.json 里 hse/limits 的单位一致），
+// 断言也都按 MHz 比，别混成 Hz——第一版就踩过这个坑。
+function eq(name, got, wantMHz) {
+  const pass = Math.abs(got - wantMHz) < 1e-6;
+  T.push({ name, got: fmt(got), want: fmt(wantMHz), pass });
+}
+function fmt(v) { return typeof v === "number" ? v.toFixed(2) + "MHz" : String(v); }
+
+async function main() {
+  DB = await (await fetch("stm32-data/data.json")).json();
+  const out = [];
+
+  // A. 数据完整性
+  const parts = Object.keys(DB.mcus).sort();
+  T.push({ name: "data.json 可被浏览器 fetch 并解析", got: parts.join(", "), want: "3 款", pass: parts.length === 3 });
+
+  const io = p => DB.mcus[p].pins.filter(x => x.assignable).length;
+  T.push({ name: "F103C8T6 可用 IO", got: io("STM32F103C8T6"), want: 37, pass: io("STM32F103C8T6") === 37 });
+  T.push({ name: "F407ZGT6 可用 IO", got: io("STM32F407ZGT6"), want: 114, pass: io("STM32F407ZGT6") === 114 });
+  T.push({ name: "F411CEU6 可用 IO", got: io("STM32F411CEU6"), want: 36, pass: io("STM32F411CEU6") === 36 });
+
+  // B. 时钟：F1 不除 2
+  let c = calcClock("STM32F103C8T6", { hse: 8, pll_mul: 9, usb_div: 1.5, ahb_presc: 1, apb1_presc: 2, apb2_presc: 1 });
+  eq("F103 HSE8 ×9 → SYSCLK", c.sysclk, 72);
+  eq("F103 PCLK1", c.pclk1, 36);
+  eq("F103 定时器时钟（PCLK1×2）", c.tim1, 72);
+  T.push({ name: "F103 全绿判定", got: JSON.stringify(c.status), want: "全 ok",
+           pass: Object.values(c.status).every(s => s === "ok" || s === "na") });
+
+  // C. 超频必须被抓到
+  c = calcClock("STM32F103C8T6", { hse: 8, pll_mul: 12, ahb_presc: 1, apb1_presc: 2, apb2_presc: 1 });
+  eq("F103 ×12 → SYSCLK（超频）", c.sysclk, 96);
+  T.push({ name: "F103 ×12 被抓成超频", got: c.status.sysclk, want: "err", pass: c.status.sysclk === "err" });
+
+  // B2. HSE 进 PLL 前的 ÷1 / ÷2（2026-11-15 实测：keysking 视频 + CubeMX CLI 双向确认）
+  c = calcClock("STM32F103C8T6", { hse: 8, hse_pll_div: 1, pll_mul: 9, usb_div: 1.5, ahb_presc: 1, apb1_presc: 2, apb2_presc: 1 });
+  eq("F103 HSE÷1 ×9 → SYSCLK", c.sysclk, 72);
+  eq("F103 USB（÷1.5 档）", c.usb, 48);
+  T.push({ name: "F103 72MHz + USB÷1.5 → 正好 48", got: c.status.usb + "（" + fmt(c.usb) + "）", want: "ok",
+           pass: c.status.usb === "ok" });
+
+  // B3. USB 预分频默认是 ÷1（审查修正：不是固定 ÷1.5）
+  c = calcClock("STM32F103C8T6", { hse: 8, pll_mul: 9, ahb_presc: 1, apb1_presc: 2, apb2_presc: 1 });
+  eq("F103 USB 默认 ÷1 → 72（不能用）", c.usb, 72);
+  T.push({ name: "F103 USB 默认档不是 48 → 必须提示", got: c.status.usb + "（" + fmt(c.usb) + "）", want: "err",
+           pass: c.status.usb === "err" });
+
+  c = calcClock("STM32F103C8T6", { hse: 8, hse_pll_div: 2, pll_mul: 9, usb_div: 1.5, ahb_presc: 1, apb1_presc: 2, apb2_presc: 1 });
+  eq("F103 HSE÷2 ×9 → 只有一半", c.sysclk, 36);
+  T.push({ name: "F103 ÷2 时 USB 也拿不到 48 → 必须报错", got: c.status.usb + "（" + fmt(c.usb) + "）", want: "err",
+           pass: c.status.usb === "err" });
+
+  // D. F4
+  c = calcClock("STM32F407ZGT6", { hse: 25, pll_m: 25, pll_n: 336, pll_p: 2, pll_q: 7,
+                                   ahb_presc: 1, apb1_presc: 4, apb2_presc: 2 });
+  eq("F407 168MHz", c.sysclk, 168);
+  eq("F407 PCLK1", c.pclk1, 42);
+  eq("F407 USB 48MHz", c.usb, 48);
+  T.push({ name: "F407 全绿判定", got: JSON.stringify(c.status), want: "全 ok",
+           pass: Object.values(c.status).every(s => s === "ok" || s === "na") });
+
+  c = calcClock("STM32F411CEU6", { hse: 25, pll_m: 25, pll_n: 200, pll_p: 2, pll_q: 4,
+                                   ahb_presc: 1, apb1_presc: 2, apb2_presc: 1 });
+  eq("F411 100MHz", c.sysclk, 100);
+  T.push({ name: "F411@100MHz 时 USB 不是 48 → 必须报错", got: c.status.usb + "（USB=" + fmt(c.usb) + "）", want: "err",
+           pass: c.status.usb === "err" });
+
+  c = calcClock("STM32F411CEU6", { hse: 25, pll_m: 25, pll_n: 192, pll_p: 2, pll_q: 4,
+                                   ahb_presc: 1, apb1_presc: 2, apb2_presc: 1 });
+  eq("F411 96MHz", c.sysclk, 96);
+  eq("F411 USB 48MHz", c.usb, 48);
+
+  // E. 冲突检查
+  let iss = checkPins("STM32F103C8T6", [
+    { instance: "USART2", type: "USART", pins: ["PA2", "PA3"] },
+    { instance: "LED",    type: "GPIO",  pins: ["PA2"] },
+  ]);
+  T.push({ name: "同脚被抢能报出来", got: iss.map(i => i.msg).join(" | "), want: "含 PA2 被抢",
+           pass: iss.some(i => i.lv === "err" && i.msg.includes("PA2") && i.msg.includes("同时")) });
+
+  iss = checkPins("STM32F103C8T6", [{ instance: "X", type: "GPIO", pins: ["PC5"] }]);
+  T.push({ name: "LQFP48 上没有的脚能报出来", got: iss.map(i => i.msg).join(" | "), want: "PC5 不存在",
+           pass: iss.some(i => i.lv === "err" && i.msg.includes("不存在")) });
+
+  iss = checkPins("STM32F103C8T6", [{ instance: "X", type: "GPIO", pins: ["PA13"] }]);
+  T.push({ name: "SWD 脚被占用能警告", got: iss.map(i => i.msg).join(" | "), want: "含 SWD",
+           pass: iss.some(i => i.lv === "warn" && i.msg.includes("SWD")) });
+
+  // F. 渲染
+  const nPass = T.filter(t => t.pass).length;
+  const allPass = nPass === T.length;
+  let html = "<table><tr><th>#</th><th>检查项</th><th>实际</th><th>期望</th><th>结果</th></tr>";
+  T.forEach((t, i) => {
+    html += `<tr><td>${i + 1}</td><td>${t.name}</td><td>${t.got}</td><td>${t.want}</td>
+             <td class="${t.pass ? 'ok' : 'err'}">${t.pass ? 'PASS' : 'FAIL'}</td></tr>`;
+  });
+  html += "</table>";
+  document.getElementById("out").innerHTML = html;
+  const r = document.getElementById("result");
+  r.className = allPass ? "ok" : "err";
+  r.textContent = allPass
+    ? `ALL PASS (${nPass}/${T.length}) —— data.json 可被前端直接使用，算法在浏览器里跑得对`
+    : `FAILED (${nPass}/${T.length}) —— 有 ${T.length - nPass} 项不对，先别拿去用`;
+}
+main().catch(e => {
+  document.getElementById("result").className = "err";
+  document.getElementById("result").textContent = "报错：" + e.message;
+});
+</script>
+</body>
+</html>

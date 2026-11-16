@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 r"""
 把「CubeMX 器件库引脚数据」+「CubeMX CLI 实测时钟值」合并成作品可直接用的
 data.json，并产出人看的《数据核对表.md》。
@@ -220,9 +220,13 @@ EVIDENCE = [
 def main():
     pins = json.load(open(PINS, encoding="utf-8"))
     data = {"meta": {
+        # ★ 版本号：改数据就同步改这里，CHANGELOG.md 里也记一笔
+        "version": "2.2.0",
+        "updated": "2026-11-16",
         "source_pins": "D:\\STM32CubeMX\\db\\mcu\\*.xml (STM32CubeMX 6.15.0 器件库)",
         "source_clock": "STM32CubeMX 6.15.0 CLI 实测回读",
-        "note": "所有数值均来自本机 CubeMX，非手写；超限判定由网页自己做（CubeMX 不拦）",
+        "note": "所有数值均来自本机 CubeMX，非手写；超限判定由网页自己做"
+                "（注意：CubeMX 管总线超限，但 F103 不管 ADC 上限，F4 会在 ADC 参数页禁用超限档位）",
     }, "mcus": {}}
 
     for part, p in pins.items():

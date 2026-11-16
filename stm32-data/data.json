@@ -1,8 +1,10 @@
 {
  "meta": {
+  "version": "2.2.0",
+  "updated": "2026-11-16",
   "source_pins": "D:\\STM32CubeMX\\db\\mcu\\*.xml (STM32CubeMX 6.15.0 器件库)",
   "source_clock": "STM32CubeMX 6.15.0 CLI 实测回读",
-  "note": "所有数值均来自本机 CubeMX，非手写；超限判定由网页自己做（CubeMX 不拦）"
+  "note": "所有数值均来自本机 CubeMX，非手写；超限判定由网页自己做（注意：CubeMX 管总线超限，但 F103 不管 ADC 上限，F4 会在 ADC 参数页禁用超限档位）"
  },
  "mcus": {
   "STM32F103C8T6": {

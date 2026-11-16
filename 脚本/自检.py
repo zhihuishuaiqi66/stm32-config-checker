@@ -9,15 +9,31 @@
 规格书里写的数字和 data.json 对不对得上、有没有把敏感信息写进去。
 最后生成 `自检报告.md`。任何一项 ❌ 都不要去投稿。
 """
+import glob
 import json
 import os
 import re
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-PKG = os.path.normpath(os.path.join(HERE, ".."))          # Qoder参赛包
+PKG = os.path.normpath(os.path.join(HERE, ".."))          # 包/仓库根目录
 DATA = os.path.join(PKG, "stm32-data")
-SPEC = os.path.join(PKG, "作品规格书-STM32配置台.md")
+
+
+def _first_exist(*cands):
+    """按顺序返回第一个存在的路径；都不存在就返回第一个（报错时能看出在找什么）。"""
+    for c in cands:
+        if os.path.exists(c):
+            return c
+    return cands[0]
+
+
+# 规格书：公开仓库里在 规格书/ 下、文件名带版本号；旧参赛包里在根目录、名字固定。
+# 两种布局都认，取版本号最大的那一份。
+_spec_cands = sorted(glob.glob(os.path.join(PKG, "规格书", "作品规格书-v*.md")))
+SPEC = _spec_cands[-1] if _spec_cands else _first_exist(
+    os.path.join(PKG, "作品规格书-STM32配置台.md"))
+# 这两份是内部资料，公开仓库里故意不放 → 缺失只提示、不算失败
 INTEL = os.path.join(PKG, "比赛情报.md")
 ASSETS = os.path.join(PKG, "我的近期作品盘点.md")
 
@@ -38,29 +54,37 @@ def warn(item, msg=""):
     results.append(("⚠️", item, msg))
 
 
+def skip(item, msg=""):
+    """可选文件缺失：既不算通过也不算失败，只记一笔。"""
+    results.append(("⏭", item, msg))
+
+
 def bad(item, msg=""):
     results.append(("❌", item, msg))
 
 
 # ---------------- A. 文件存在 ----------------
 def check_files():
+    # (路径, 名称, 是否必需)  —— 内部资料在公开仓库里故意不放，不算失败
     need = [
-        (SPEC, "作品规格书"),
-        (INTEL, "比赛情报"),
-        (ASSETS, "近期作品盘点"),
-        (os.path.join(PKG, "README.md"), "README"),
-        (os.path.join(PKG, "参考实现.html"), "参考实现（前端逻辑样板）"),
-        (os.path.join(DATA, "data.json"), "data.json"),
-        (os.path.join(DATA, "stm32-pins.json"), "stm32-pins.json"),
-        (os.path.join(DATA, "数据核对表.md"), "数据核对表"),
-        (os.path.join(DATA, "引脚核对表.md"), "引脚核对表"),
-        (os.path.join(HERE, "浏览器自测.py"), "浏览器自测脚本"),
+        (SPEC, "作品规格书", True),
+        (INTEL, "比赛情报", False),
+        (ASSETS, "近期作品盘点", False),
+        (os.path.join(PKG, "README.md"), "README", True),
+        (os.path.join(PKG, "参考实现.html"), "参考实现（前端逻辑样板）", True),
+        (os.path.join(DATA, "data.json"), "data.json", True),
+        (os.path.join(DATA, "stm32-pins.json"), "stm32-pins.json", True),
+        (os.path.join(DATA, "数据核对表.md"), "数据核对表", True),
+        (os.path.join(DATA, "引脚核对表.md"), "引脚核对表", True),
+        (os.path.join(HERE, "浏览器自测.py"), "浏览器自测脚本", True),
     ]
-    for p, name in need:
+    for p, name, required in need:
         if os.path.exists(p):
             ok(f"文件存在：{name}", f"{os.path.getsize(p):,} B")
-        else:
+        elif required:
             bad(f"文件存在：{name}", p)
+        else:
+            skip(f"文件存在：{name}", "未纳入本仓库（内部资料，按设计排除）")
     # 放错位置的旧路径（整理前的残留）
     stale = os.path.join(os.path.dirname(PKG), "stm32-data")
     if os.path.exists(stale):
@@ -210,12 +234,18 @@ def check_spec_consistency(d):
 
     mc = d["mcus"]
     io = {p: sum(1 for x in mc[p]["pins"] if x.get("assignable")) for p in mc}
-    # 规格书第 8 节那份核对清单里写死了一串数字
-    want = f"F103={io['STM32F103C8T6']} / F407={io['STM32F407ZGT6']} / F411={io['STM32F411CEU6']}"
-    if want in t:
-        ok("规格书 IO 数字与 data.json 一致", want)
+    # 规格书里的写法是「F103 LQFP48 37 IO、F407 LQFP144 114 IO、F411 UFQFPN48 36 IO」，
+    # 所以按「芯片简称 … 数字 … IO」同段匹配，不要求固定串。
+    miss = []
+    for short, n in (("F103", io["STM32F103C8T6"]),
+                     ("F407", io["STM32F407ZGT6"]),
+                     ("F411", io["STM32F411CEU6"])):
+        if not re.search(short + r"[^\n]{0,40}?" + str(n) + r"[^\n]{0,12}?IO", t):
+            miss.append(f"{short}={n}")
+    if not miss:
+        ok("规格书 IO 数字与 data.json 一致", "37 / 114 / 36")
     else:
-        bad("规格书 IO 数字与 data.json 一致", f"规格书里找不到「{want}」")
+        bad("规格书 IO 数字与 data.json 一致", "缺 " + "、".join(miss))
 
     maxs = "／".join([str(mc[p]["max_sysclk_mhz"]) for p in ("STM32F103C8T6", "STM32F407ZGT6", "STM32F411CEU6")])
     pat = re.escape(maxs).replace("／", r"\s*/\s*")
@@ -224,19 +254,28 @@ def check_spec_consistency(d):
     else:
         warn("规格书主频表述", f"没精确匹配「{maxs}」，人工看一眼")
 
-    hs = f"F103={mc['STM32F103C8T6']['hse_default_mhz']}MHz、F407={mc['STM32F407ZGT6']['hse_default_mhz']}MHz、F411={mc['STM32F411CEU6']['hse_default_mhz']}MHz"
-    hs2 = f"F103={mc['STM32F103C8T6']['hse_default_mhz']} / F407={mc['STM32F407ZGT6']['hse_default_mhz']} / F411={mc['STM32F411CEU6']['hse_default_mhz']} MHz"
-    if hs in t or hs2 in t or ("F407=25MHz" in t and "F411=25MHz" in t):
+    hse_expect = [mc["STM32F103C8T6"]["hse_default_mhz"],
+                  mc["STM32F407ZGT6"]["hse_default_mhz"],
+                  mc["STM32F411CEU6"]["hse_default_mhz"]]
+    hs = f"F103={hse_expect[0]}MHz、F407={hse_expect[1]}MHz、F411={hse_expect[2]}MHz"
+    hs2 = f"F103={hse_expect[0]} / F407={hse_expect[1]} / F411={hse_expect[2]} MHz"
+    # v2.1 的写法是「F103 8、F407 25、F411 25 MHz」，所以再挂一条宽松匹配
+    m_hse = re.search(r"F103\s*(\d+)\s*[、,／/]\s*F407\s*(\d+)\s*[、,／/]\s*F411\s*(\d+)", t)
+    got = [int(x) for x in m_hse.groups()] if m_hse else None
+    if hs in t or hs2 in t or got == hse_expect:
         ok("规格书 HSE 默认值与 data.json 一致", "8 / 25 / 25 MHz")
     else:
         warn("规格书 HSE 表述", "没精确匹配，人工看一眼第 8 节")
 
-    # 五个关键结论都要在
+    # 关键结论都要在。
+    # ★ 2026-11-16 更新：这两条原来是按「旧结论」写的断言（F1 不除 2 / CubeMX 不拦超频），
+    #   后来经视频拆解 + 器件库核实把结论改对了，断言也必须跟着改，否则会反过来报错。
     keys = {
         "HSE 必须可配": "HSE 必须做成可选项",
-        "F1 不除 2": "HSE 是直接进",
-        "定时器 ×2": "定时器时钟",
-        "CubeMX 不拦超频": "不拦超频",
+        "HSE 进 PLL 有可选 ÷1/÷2": "÷1 或 ÷2",
+        "定时器 ×2 是硬件自动": "×2 是硬件自动",
+        "定时器 ×2 用户改不了": "无法自己设置",
+        "CubeMX 管总线不管外设上限": "不管外设",
         "F411 96MHz+USB": "96MHz",
     }
     for name, kw in keys.items():
@@ -301,14 +340,22 @@ def check_doc_numbers(d):
 
     for doc, path in (("README", readme), ("规格书", SPEC)):
         t = open(path, encoding="utf-8").read()
-        # 行数声明
-        for m in re.finditer(r"(\d{3})\s*行", t):
-            claimed = int(m.group(1))
-            if claimed != n_lines:
-                bad(f"{doc} 行数声明", f"说 {claimed} 行，实际 {n_lines} 行")
+        # 行数声明：只认明确指向「规格书」的行数。
+        # （早先直接用 r"(\d{3})\s*行" 会把「我做过 2866 行的 ESP32 项目」误判成规格书 866 行）
+        claim_bad = None
+        for m in re.finditer(r"规格书[^\n]{0,30}?(\d{3,4})\s*行", t):
+            if int(m.group(1)) != n_lines:
+                claim_bad = f"说 {m.group(1)} 行，实际 {n_lines} 行"
                 break
+        # README 里的模糊说法「2000+ 行」只校验下限
+        if not claim_bad:
+            for m in re.finditer(r"(\d{3,4})\+\s*行", t):
+                if int(m.group(1)) > n_lines:
+                    claim_bad = f"说 {m.group(1)}+ 行，实际只有 {n_lines} 行"
+        if claim_bad:
+            bad(f"{doc} 行数声明", claim_bad)
         else:
-            pass
+            ok(f"{doc} 行数声明与文件一致", f"规格书 {n_lines} 行")
     # data.json 体积 + 引脚总数
     for doc, path in (("README", readme), ("规格书", SPEC)):
         t = open(path, encoding="utf-8").read()
@@ -345,14 +392,16 @@ def report():
     n_bad = sum(1 for r in results if r[0] == "❌")
     n_warn = sum(1 for r in results if r[0] == "⚠️")
     n_ok = sum(1 for r in results if r[0] == "✅")
+    n_skip = sum(1 for r in results if r[0] == "⏭")
 
-    L = ["# Qoder 参赛包 · 自检报告", ""]
+    L = ["# 自检报告", ""]
     L.append(f"**结论：{'❌ 有 ' + str(n_bad) + ' 项不通过，先别投稿' if n_bad else '✅ 全部通过，可以投稿'}**")
     L.append("")
     L.append(f"| 项 | 数量 |")
     L.append("|---|---|")
     L.append(f"| ✅ 通过 | {n_ok} |")
     L.append(f"| ⚠️ 提醒 | {n_warn} |")
+    L.append(f"| ⏭ 跳过（按设计排除） | {n_skip} |")
     L.append(f"| ❌ 不通过 | {n_bad} |")
     L.append("")
     L.append("## 逐项结果")
@@ -369,7 +418,7 @@ def report():
     for r, item, msg in results:
         if r != "✅":
             print(f"{r} {item}  {msg}")
-    print(f"\n通过 {n_ok} / 提醒 {n_warn} / 不通过 {n_bad}")
+    print(f"\n通过 {n_ok} / 提醒 {n_warn} / 跳过 {n_skip} / 不通过 {n_bad}")
     print("报告：", out)
     return n_bad
 

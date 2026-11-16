@@ -11,6 +11,21 @@
 
 ---
 
+## 配套开源工具：同一个东西的「另一面」
+
+这个网页负责**算清楚、讲明白**；真正去改 `.ioc`、生成工程代码的是另一个开源仓库：
+
+**[zhihuishuaiqi66/stm32-cubemx](https://github.com/zhihuishuaiqi66/stm32-cubemx)** —— STM32CubeMX 的 MCP Server + CLI（10 个工具，零依赖，MIT）
+
+| | 这个网页 | 配套仓库 |
+|---|---|---|
+| 给谁用 | 学生，要看懂、要学习 | 工程师 / AI，要直接执行 |
+| 做什么 | 算清楚 + 解释为什么 + 导出命令行 | 真的改 `.ioc`、生成 HAL 代码 |
+| 怎么用 | 打开网页就能用 | 接进 Claude Code / Cursor / Claude Desktop 等 MCP 客户端，或走命令行 |
+
+**两者是通的**：网页「导出」面板生成的 `config load …` / `clock set …` 命令，配套仓库的 CLI 可以直接执行。数据源同为 CubeMX 6.15.0 官方器件库。
+
+---
 ## 这解决什么问题
 
 用 CubeMX 配 STM32 的人，配时钟的全部方法常常是这一套：
@@ -178,6 +193,7 @@ python 脚本/自检.py              # 73 项数据自检
 | **正式网页（Qoder Sites）** | ✅ **已上线并通过验收**：https://stm32-bench-a1p9ppjdkll.qoder.website/ |
 | 三个换算器（PWM / ADC 采样率 / 波特率误差） | 🚧 规格书已定，待实现 |
 | **上板实测** | ✅ **已完成**：F103C8T6 + F407ZGT6 各跑一套自检固件（时钟树回读 / 定时器 ×2 / ADC 超限），见 `实测/` |
+| **配套开源工具** | ✅ [stm32-cubemx](https://github.com/zhihuishuaiqi66/stm32-cubemx) 已开源（MCP Server + CLI，MIT） |
 
 ### 已知边界（不藏着）
 

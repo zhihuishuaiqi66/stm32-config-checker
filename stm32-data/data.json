@@ -1,6 +1,6 @@
 {
  "meta": {
-  "version": "2.2.0",
+  "version": "2.3.0",
   "updated": "2026-11-16",
   "source_pins": "D:\\STM32CubeMX\\db\\mcu\\*.xml (STM32CubeMX 6.15.0 器件库)",
   "source_clock": "STM32CubeMX 6.15.0 CLI 实测回读",

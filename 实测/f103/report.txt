@@ -1,0 +1,31 @@
+﻿
+===== STM32F103C8T6 配置自检报告 =====
+固件编译: Nov 16 2026 13:25:31
+[T1] RCC 寄存器回读
+  SYSCLK 源      = PLL
+  AHB 分频       = /1
+  APB1 分频      = /2   (PCLK1)
+  APB2 分频      = /1   (PCLK2)
+  ADC 分频       = /2
+  PLL 源         = HSE
+  PLLXTPRE       = HSE /1   (HSE 进 PLL 前的分频)
+  PLLMUL         = x9
+[T2] HAL 计算的频率
+  SYSCLK = 72000000 Hz
+  HCLK   = 72000000 Hz
+  PCLK1  = 36000000 Hz
+  PCLK2  = 72000000 Hz
+[T3] 定时器 x2 规则实测
+  PCLK1 = 36000000 Hz, APB1 分频 = /2
+  TIM3 PSC=7199 ARR=9999 -> 若 TIM3CLK=72MHz 应 1Hz
+  实测 2 个周期 = 2000 ms
+  判定：约 2000ms -> TIM3CLK=72MHz，**x2 翻倍成立**
+[T4] ADC 时钟超限实测（采样内部 1.2V 基准 VREFINT）
+  ADCCLK=12MHz (PCLK2/6 合规) mean=1499 min=1495 max=1502 峰峰=7
+  ADCCLK=36MHz (PCLK2/2 超限) mean=1495 min=1493 max=1498 峰峰=5
+  均值差 = 4
+  判定：36MHz 下仍能读，但已超出数据手册规格（14MHz）
+  注：36MHz 时 239.5 周期=6.65us，低于 VREFINT 要求的 17.1us，
+      所以偏差可能来自采样时间不足——这本身就是超频的后果。
+===== 报告结束，固件停在 while(1)，RAM 保持 =====
+

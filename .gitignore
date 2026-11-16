@@ -20,3 +20,7 @@ desktop.ini
 *.tmp
 *.log
 ~$*
+
+# 编辑时的临时备份
+*.bak-*
+*.bak

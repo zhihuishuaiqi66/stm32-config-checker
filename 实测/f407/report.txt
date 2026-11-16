@@ -1,0 +1,33 @@
+﻿
+===== STM32F407ZGT6 配置自检报告 =====
+固件编译: Nov 16 2026 13:49:11
+[T1] RCC 寄存器回读
+  SYSCLK 源    = PLL
+  AHB 分频     = /1
+  APB1 分频    = /4  (PCLK1)
+  APB2 分频    = /2  (PCLK2)
+  PLL 源       = HSE
+  PLLM=8  PLLN=336  PLLP=/2  PLLQ=7
+[T2] HAL 计算的频率
+  SYSCLK = 168000000 Hz
+  HCLK   = 168000000 Hz
+  PCLK1  = 42000000 Hz
+  PCLK2  = 84000000 Hz
+[T3] 定时器 x2 规则实测
+  PCLK1 = 42000000 Hz, APB1 分频 = /4
+  TIM3 PSC=8399 ARR=9999 -> 若 TIM3CLK=84MHz 应 1Hz
+  实测 2 个周期 = 2000 ms
+  判定：约 2000ms -> TIM3CLK=84MHz，**x2 翻倍成立**
+[T4] ADC 预分频实测（PCLK2=84MHz，上限 36MHz）
+  ADC时钟=/4 -> 21MHz(合规) mean=1484 min=1481 max=1488 峰峰=7
+  ADC时钟=/2 -> 42MHz(超限) mean=1482 min=1479 max=1488 峰峰=9
+  均值差 = 2
+  注：F4 的 ADC 预分频在 CubeMX 的【ADC 参数页】，不在时钟树；
+      器件库里超限档位带 Action=DISABLE，CubeMX 会禁用（和 F103 相反）。
+[T5] HSE 与晶振假设
+  HSE 就绪(HSERDY) = 是
+  本固件按 **HSE = 8MHz** 编译：PLLM=8 -> VCO 输入 1MHz（规格 1~2MHz）
+  若这块板其实是 25MHz 晶振：VCO 输入 = 25/8 = 3.125MHz，超出规格，PLL 锁不上
+  -> 芯片根本不会跑到这里。所以能看到本报告，本身就证明晶振是 8MHz。
+===== 报告结束，固件停在 while(1)，RAM 保持 =====
+
